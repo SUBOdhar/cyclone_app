@@ -75,7 +75,6 @@ class _CustomVideoPlayerState extends State<CustomVideoPlayer> {
       _videoAspectRatio = _videoPlayerController.value.aspectRatio;
 
       _chewieController = ChewieController(
-
         videoPlayerController: _videoPlayerController,
         autoPlay: widget.autoPlay,
         looping: widget.looping,

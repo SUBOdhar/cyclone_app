@@ -15,8 +15,6 @@ class LoginService {
     final accessToken = prefs.getString('accessToken');
     final url = prefs.getString("storage_server");
     try {
-    
-
       if (refreshToken != null && accessToken != null && url != null) {
         try {
           final Uri uri = Uri.parse("$url/api/refresh");

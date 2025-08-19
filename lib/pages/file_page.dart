@@ -319,7 +319,7 @@ class _FilespageState extends State<Filespage> {
                 title: const Text("Download"),
                 onTap: () {
                   Navigator.pop(context);
-                  _fileService.handleDownload(fileData[index]['name'], context);
+                  _fileService.handleDownload(fileData, index, context);
                 },
               ),
               ListTile(

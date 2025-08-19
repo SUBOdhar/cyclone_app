@@ -123,8 +123,10 @@ class FileService {
     }
   }
 
-  Future<void> handleDownload(String filename, BuildContext context) async {
-    String url = "$_baseUrl/files/$filename/download";
+  Future<void> handleDownload(fileData, index, BuildContext context) async {
+    final fileId = fileData[index]['file_id'];
+    print("File ID: $fileId");
+    String url = "$_baseUrl/files/$fileId/download";
     final dio = Dio();
 
     // Choose download directory based on platform.
@@ -155,7 +157,7 @@ class FileService {
 
     String folderPath = "${downloadsDir.path}/CycloneCloud";
     Directory(folderPath).createSync(recursive: true);
-    String savePath = "$folderPath/$filename";
+    String savePath = "$folderPath/$fileId";
 
     final file = File(savePath);
 
@@ -267,14 +269,14 @@ class FileService {
 
   Future<void> handleRename(fileData, index, String newFilename,
       void Function() reloadFileList) async {
-    final filename = fileData[index]['filename'];
+    final fileId = fileData[index]['file_id'];
     final prefs = await SharedPreferences.getInstance();
     final userId = prefs.getString('user_id') ?? '';
     final accessToken = prefs.getString('accessToken');
 
     try {
       final request =
-          http.Request('PUT', Uri.parse('$_baseUrl/files/$filename/rename'));
+          http.Request('PUT', Uri.parse('$_baseUrl/files/$fileId/rename'));
       request.headers.addAll({
         'Content-Type': 'application/json; charset=UTF-8',
       });
@@ -376,9 +378,12 @@ class FileService {
   Future<void> uploadFile(void Function() handleRefresh, BuildContext context,
       [String folder = '']) async {
     if (_isPickingFile) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('File picker is already active.')),
-      );
+      // Always check context.mounted before using it
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('File picker is already active.')),
+        );
+      }
       return;
     }
 
@@ -395,10 +400,16 @@ class FileService {
         final userId = prefs.getString('user_id') ?? '';
         final ValueNotifier<double> uploadProgress = ValueNotifier<double>(0.0);
 
+        // Check context.mounted before showing dialog
+        if (!context.mounted) {
+          _isPickingFile = false; // Reset flag if context is gone
+          return;
+        }
         showDialog(
           context: context,
           barrierDismissible: false,
-          builder: (context) {
+          builder: (dialogContext) {
+            // Use a new context for the dialog builder
             return AlertDialog(
               title: const Text("Uploading Files..."),
               content: ValueListenableBuilder<double>(
@@ -422,7 +433,7 @@ class FileService {
         );
 
         try {
-          final deviceInfoPlugin = DeviceInfoPlugin(); // Initialize here
+          final deviceInfoPlugin = DeviceInfoPlugin();
           final deviceInfo = await deviceInfoPlugin.deviceInfo;
           final allInfo = deviceInfo.data;
 
@@ -437,90 +448,110 @@ class FileService {
           int totalBytes = files.fold(0, (sum, file) => sum + file.size);
           int uploadedBytes = 0;
 
-          // Use a list to hold futures for each file upload
           List<Future<void>> uploadFutures = [];
 
           for (PlatformFile file in files) {
             if (file.bytes == null) {
               print("No file data available for file: ${file.name}");
-              continue; // Skip files without data.
+              continue;
             }
             final mimeType = lookupMimeType(file.name);
             final contentType = mimeType != null
                 ? MediaType.parse(mimeType)
                 : MediaType('application', 'octet-stream');
 
-            // Create a stream from the file bytes
-            var stream = Stream.fromIterable([file.bytes!]);
+            var stream = http.ByteStream(Stream.fromIterable([file.bytes!]));
+            var length = file.bytes!.length;
 
-            // Add to the list of futures.
             uploadFutures.add(Future.sync(() async {
-              // Important: Create a new stream *within* the async function.
               var requestFile = http.MultipartFile(
-                'files',
-                stream.map((bytes) {
-                  uploadedBytes += bytes.length;
-                  uploadProgress.value = uploadedBytes / totalBytes;
-                  return bytes;
-                }),
-                file.size,
+                'files', // This should match the field name on your server for files
+                stream,
+                length,
                 filename: file.name,
                 contentType: contentType,
               );
               request.files.add(requestFile);
+              // Update progress based on individual file upload, if you want real-time per-file progress
+              // For overall progress, the existing logic is fine.
             }));
           }
-          // Wait for all files to be added to the request.
           await Future.wait(uploadFutures);
 
-          // Print the request details for debugging
-          print("Request Fields: ${request.fields}"); // Print the fields
+          // Update overall progress just before sending the request
+          // This part might need adjustment if you want progress during the actual network send,
+          // which requires a custom http client that exposes stream progress.
+          // For now, it updates after all files are added to the request.
+          uploadProgress.value = 1.0; // Assume 100% when all files are prepared
+
+          print("Request Fields: ${request.fields}");
           print(
               "Request Files: ${request.files.map((f) => f.filename).toList()}");
 
           final http.StreamedResponse response = await request.send();
           final int statusCode = response.statusCode;
-          final String responseBody =
-              await response.stream.bytesToString(); //get the response
+          final String responseBody = await response.stream.bytesToString();
 
-          Navigator.of(context).pop(); // Close the dialog
-          print("Response from server: $responseBody"); //print the response
+          // Check context.mounted before popping dialog
+          if (context.mounted) {
+            Navigator.of(context).pop(); // Close the dialog
+          }
+          print("Response from server: $responseBody");
 
           if (statusCode == 200) {
             handleRefresh();
             clearFilePickerCache();
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Files uploaded successfully!')),
-            );
+            // Check context.mounted before showing snackbar
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Files uploaded successfully!')),
+              );
+            }
           } else {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                  content: Text(
-                      'Upload failed: $statusCode\nResponse: $responseBody')), //show the response
-            );
+            clearFilePickerCache(); // Clear cache even on failure
+            // Check context.mounted before showing snackbar
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                    content: Text(
+                        'Upload failed: $statusCode\nResponse: $responseBody')),
+              );
+            }
           }
         } catch (e) {
-          Navigator.of(context).pop(); // Close the dialog
+          // Check context.mounted before popping dialog
+          if (context.mounted) {
+            Navigator.of(context).pop(); // Close the dialog
+          }
           _handleNetworkError(e);
           clearFilePickerCache();
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Network error during upload.')),
-          );
+          // Check context.mounted before showing snackbar
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Network error during upload.')),
+            );
+          }
         }
       } else {
         clearFilePickerCache();
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('File upload canceled.')),
-        );
+        // Check context.mounted before showing snackbar
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('File upload canceled.')),
+          );
+        }
       }
     } catch (e) {
       print('Error in uploadFile: $e');
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-              'An unexpected error occurred during file picking or upload.'),
-        ),
-      );
+      // Check context.mounted before showing snackbar
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                'An unexpected error occurred during file picking or upload.'),
+          ),
+        );
+      }
     } finally {
       _isPickingFile = false;
     }
